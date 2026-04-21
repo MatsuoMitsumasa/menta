@@ -227,13 +227,18 @@ sub _finish {
 
 sub render_and_print {
     my ($tmpl, @params) = @_;
+    render_and_print_as('text/html; charset=' . MENTA::Util::_charset(), $tmpl, @params);
+}
+
+sub render_and_print_as {
+    my ($content_type, $tmpl, @params) = @_;
     MENTA::Util::require_once('MENTA/TemplateLoader.pm');
     my $out = MENTA::TemplateLoader::__load($tmpl, @params);
     $out = MENTA::Util::encode_output($out);
 
     _finish([
         200, [
-            'Content-Type' => "text/html; charset=" . MENTA::Util::_charset()
+            'Content-Type' => $content_type
         ], [$out]
     ]);
 }
@@ -250,6 +255,13 @@ sub finalize {
     my $content_type = shift || ('text/html; charset=' . MENTA::Util::_charset());
 
     _finish([200, ['Content-Type' => $content_type], [$str]]);
+}
+
+sub finalize_json {
+    my ($data) = @_;
+    MENTA::Util::require_once('JSON/PP.pm');
+    my $json = JSON::PP::encode_json($data);
+    _finish([200, ['Content-Type' => 'application/json; charset=UTF-8'], [$json]]);
 }
 
 sub param {
