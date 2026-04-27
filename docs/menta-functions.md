@@ -569,8 +569,6 @@ my $url = current_url();
 - `Accept: application/json`
 - `Content-Type: application/json`
 
-この判定は例外発生時のレスポンス形式にも使われます。JSON を期待するリクエストで例外が発生した場合は、エラーも JSON で返します。
-
 サンプル:
 
 ```perl

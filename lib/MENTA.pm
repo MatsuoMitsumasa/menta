@@ -72,9 +72,8 @@ sub create_app {
     my $app = sub {
         my $env = shift;
         local $MENTA::STASH;
-        my $req;
         try {
-            $req = MENTA::Request->new($env);
+            my $req = MENTA::Request->new($env);
             MENTA->run_context(
                 $config, $req, sub {
                     MENTA->call_trigger('BEFORE_DISPATCH');
@@ -84,8 +83,6 @@ sub create_app {
         } catch {
             if ($_ && ref $_ eq 'ARRAY') {
                 return $_;
-            } elsif (MENTA::Util::request_wants_json($req)) {
-                return MENTA::Util::exception_response($req, $_, '');
             } else {
                 my $e = $_;
                 utf8::encode($e) if utf8::is_utf8($e);
@@ -97,7 +94,6 @@ sub create_app {
         my $origapp = $app;
         $app = sub {
             my @args = @_;
-            my $req = MENTA::Request->new($args[0]);
             my $res;
             my $trace;
             my $caught;
@@ -129,7 +125,11 @@ sub create_app {
                 if (ref $_ && ref $_ eq 'ARRAY') {
                     return $_;
                 } else {
-                    return MENTA::Util::exception_response($req, $_, $trace);
+                    return [
+                        500,
+                        [ 'Content-Type' => 'text/html; charset=utf-8', 'Content-Length' => length($trace) ],
+                        [ $trace ]
+                    ]
                 }
             };
             return $res;
