@@ -26,6 +26,7 @@
 - `config`
 - `render`
 - `param`
+- `query_param`
 - `param_json`
 - `env`
 - `cookie`
@@ -44,6 +45,7 @@
 - `current_url`
 - `wants_json`
 - `set_cookie`
+- `debug_run`
 
 ### テンプレートで使える関数
 
@@ -82,6 +84,7 @@
 | `config` | ○ | ○ | 設定参照 |
 | `render` | ○ | ○ | 部分テンプレート描画 |
 | `param` | ○ | ○ | リクエストパラメータ取得 |
+| `query_param` | ○ | × | クエリ文字列パラメータ取得 |
 | `param_json` | ○ | × | JSON リクエスト本文取得 |
 | `env` | ○ | ○ | PSGI 環境取得 |
 | `cookie` | ○ | ○ | リクエスト cookie 取得 |
@@ -100,6 +103,7 @@
 | `current_url` | ○ | ○ | 現在 URL を取得 |
 | `wants_json` | ○ | ○ | JSON を期待するリクエストか判定 |
 | `set_cookie` | ○ | × | レスポンスに cookie を追加 |
+| `debug_run` | ○ | × | 例外を簡易 HTML で表示するデバッグ実行 |
 | `extends` | × | ○ | レイアウト継承 |
 | `block` | × | ○ | ブロック定義・展開 |
 
@@ -206,6 +210,32 @@ my @tags = param('tag');
 <p><?= param('user') ?></p>
 ```
 
+### `query_param($name)`
+
+クエリ文字列だけからパラメータを取得します。
+
+コントローラ専用です。
+
+`param()` と違い、POST 本文を読まないため、`POST + application/json` で `param_json()` より先に URL の `mode` などを判定したい場合に使えます。
+
+サンプル:
+
+```perl
+my $mode = query_param('mode') || '';
+
+if ($mode eq 'json' && ($req_env->{REQUEST_METHOD} || '') eq 'POST') {
+    my $payload = param_json();
+    finalize_json({ ok => 1, payload => $payload });
+}
+```
+
+補足:
+
+- `+` は空白に変換されます
+- `%xx` 形式の URL エンコードはデコードされます
+- 値が空の場合は空文字列、存在しない場合は `undef` を返します
+- 同じ名前のパラメータが複数ある場合は最後の値を返します
+
 ### `param_json()`
 
 `application/json` のリクエスト本文を Perl のデータ構造にデコードして返します。
@@ -219,18 +249,11 @@ my $payload = param_json();
 my $name = $payload->{name};
 ```
 
-JSON POST の `mode` などをクエリ文字列から取得する場合は、`param()` より先に `env()->{QUERY_STRING}` を見てください。
+JSON POST の `mode` などをクエリ文字列から取得する場合は、`param()` より先に `query_param()` を使ってください。
 
 ```perl
 my $req_env = env();
-my $query = $req_env->{QUERY_STRING} || '';
-
-my $mode = '';
-if ($query =~ /(?:^|&)mode=([^&]*)/) {
-    $mode = $1;
-} else {
-    $mode = param('mode') || '';
-}
+my $mode = query_param('mode') || '';
 
 if ($mode eq 'json' && ($req_env->{REQUEST_METHOD} || '') eq 'POST') {
     my $payload = param_json();
@@ -243,7 +266,7 @@ if ($mode eq 'json' && ($req_env->{REQUEST_METHOD} || '') eq 'POST') {
 - 本文が空なら `undef`
 - 不正な JSON の場合は例外になります
 - `POST + application/json` では、先に `param()` や `upload()` を呼ぶと `CGI::Simple` がリクエスト本文を読むため、その後の `param_json()` が空になることがあります
-- JSON 本文を読む処理では、クエリ文字列の判定に `param()` ではなく `env()->{QUERY_STRING}` を使うと安全です
+- JSON 本文を読む処理では、クエリ文字列の判定に `param()` ではなく `query_param()` を使うと安全です
 - CGI/PSGI 環境によっては、JSON POST の本文を読まずに応答するとレスポンス本文が期待どおり返らないことがあります。JSON POST を扱う処理では、本文を使わない場合でも先に `param_json()` で読み切ってから応答すると安全です
 
 ### `env()`
@@ -606,6 +629,27 @@ finalize('ok');
 補足:
 
 - `respond`、`redirect`、`finalize`、`finalize_json`、`render_and_print` 系の応答時に一緒に返されます
+
+### `debug_run($code)`
+
+コードリファレンスを実行し、通常の例外が発生した場合にエラーメッセージを HTML エスケープして表示します。
+
+コントローラ専用です。
+
+サンプル:
+
+```perl
+debug_run(sub {
+    my $payload = param_json();
+    finalize_json({ ok => 1, payload => $payload });
+});
+```
+
+補足:
+
+- `finalize` や `respond` などのレスポンス確定は PSGI レスポンス配列を `die` する仕組みなので、その場合は捕捉せずにそのまま返します
+- エラー本文は `text/html; charset=UTF-8` で返します
+- デバッグ用途の補助関数です。利用範囲は必要な診断処理に限定してください
 
 ## テンプレート専用ヘルパー
 

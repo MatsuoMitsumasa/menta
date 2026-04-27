@@ -289,6 +289,22 @@ sub param {
         MENTA::Util::decode_input(MENTA->context->request->param(@_));
     }
 }
+sub query_param {
+    my ($name) = @_;
+    my $qs = MENTA->context->request->{env}->{QUERY_STRING} || '';
+    my %q;
+    for my $pair (split /&/, $qs) {
+        next unless length $pair;
+        my ($k, $v) = split /=/, $pair, 2;
+        $v = '' unless defined $v;
+        $k =~ s/\+/ /g;
+        $v =~ s/\+/ /g;
+        $k =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
+        $v =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
+        $q{$k} = $v;
+    }
+    return $q{$name};
+}
 sub env          { MENTA->context->request->env() }
 sub upload       { MENTA->context->request->upload(@_) }
 sub cookie       { MENTA->context->request->cookie(@_) }
@@ -501,6 +517,30 @@ sub static_file_path {
             return $package;
         }
     }
+}
+
+sub debug_run {
+    my ($code) = @_;
+
+    my $ok = eval {
+        $code->();
+        1;
+    };
+    return if $ok;
+
+    my $err = $@;
+
+    if (ref($err) && ref($err) eq 'ARRAY') {
+        die $err;
+    }
+
+    $err ||= 'unknown error';
+    utf8::encode($err) if utf8::is_utf8($err);
+    $err =~ s/&/&amp;/g;
+    $err =~ s/</&lt;/g;
+    $err =~ s/>/&gt;/g;
+
+    finalize("<html><body><pre>$err</pre></body></html>", 'text/html; charset=UTF-8');
 }
 
 1;

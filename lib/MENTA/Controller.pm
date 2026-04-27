@@ -31,7 +31,7 @@ sub import {
 sub install_functions {
     my $pkg = caller(0);
     no strict 'refs';
-    for my $meth (qw/escape_html unescape_html raw_string config render param param_json env cookie mobile_agent uri_for static_file_path docroot AUTOLOAD redirect is_post_request render_and_print render_and_print_as respond redirect finalize finalize_json upload current_url wants_json set_cookie/) {
+    for my $meth (qw/escape_html unescape_html raw_string config render param query_param param_json env cookie mobile_agent uri_for static_file_path docroot AUTOLOAD redirect is_post_request render_and_print render_and_print_as respond redirect finalize finalize_json upload current_url wants_json set_cookie debug_run/) {
         *{"$pkg\::$meth"} = *{"MENTA::$meth"};
     }
 }
