@@ -26,19 +26,24 @@
 - `config`
 - `render`
 - `param`
+- `param_json`
 - `env`
+- `cookie`
 - `mobile_agent`
 - `uri_for`
 - `static_file_path`
 - `docroot`
 - `redirect`
 - `is_post_request`
+- `respond`
 - `render_and_print`
 - `render_and_print_as`
 - `finalize`
 - `finalize_json`
 - `upload`
 - `current_url`
+- `wants_json`
+- `set_cookie`
 
 ### テンプレートで使える関数
 
@@ -51,12 +56,14 @@
 - `render`
 - `param`
 - `env`
+- `cookie`
 - `mobile_agent`
 - `uri_for`
 - `static_file_path`
 - `docroot`
 - `redirect`
 - `current_url`
+- `wants_json`
 
 ### テンプレート専用ヘルパー
 
@@ -75,19 +82,24 @@
 | `config` | ○ | ○ | 設定参照 |
 | `render` | ○ | ○ | 部分テンプレート描画 |
 | `param` | ○ | ○ | リクエストパラメータ取得 |
+| `param_json` | ○ | × | JSON リクエスト本文取得 |
 | `env` | ○ | ○ | PSGI 環境取得 |
+| `cookie` | ○ | ○ | リクエスト cookie 取得 |
 | `mobile_agent` | ○ | ○ | モバイル端末情報取得 |
 | `uri_for` | ○ | ○ | URL 組み立て |
 | `static_file_path` | ○ | ○ | 静的ファイル URL 作成 |
 | `docroot` | ○ | ○ | アプリのベース URL 取得 |
 | `redirect` | ○ | ○ | リダイレクト応答 |
 | `is_post_request` | ○ | × | POST 判定 |
+| `respond` | ○ | × | 任意のステータス、ヘッダ、本文で応答 |
 | `render_and_print` | ○ | × | テンプレート描画してレスポンス確定 |
 | `render_and_print_as` | ○ | × | Content-Type を指定してテンプレート描画 |
 | `finalize` | ○ | × | 任意レスポンス本文で応答確定 |
 | `finalize_json` | ○ | × | Perl データを JSON にして返す |
 | `upload` | ○ | × | アップロードファイル取得 |
 | `current_url` | ○ | ○ | 現在 URL を取得 |
+| `wants_json` | ○ | ○ | JSON を期待するリクエストか判定 |
+| `set_cookie` | ○ | × | レスポンスに cookie を追加 |
 | `extends` | × | ○ | レイアウト継承 |
 | `block` | × | ○ | ブロック定義・展開 |
 
@@ -194,6 +206,46 @@ my @tags = param('tag');
 <p><?= param('user') ?></p>
 ```
 
+### `param_json()`
+
+`application/json` のリクエスト本文を Perl のデータ構造にデコードして返します。
+
+コントローラ専用です。
+
+サンプル:
+
+```perl
+my $payload = param_json();
+my $name = $payload->{name};
+```
+
+JSON POST の `mode` などをクエリ文字列から取得する場合は、`param()` より先に `env()->{QUERY_STRING}` を見てください。
+
+```perl
+my $req_env = env();
+my $query = $req_env->{QUERY_STRING} || '';
+
+my $mode = '';
+if ($query =~ /(?:^|&)mode=([^&]*)/) {
+    $mode = $1;
+} else {
+    $mode = param('mode') || '';
+}
+
+if ($mode eq 'json' && ($req_env->{REQUEST_METHOD} || '') eq 'POST') {
+    my $payload = param_json();
+    finalize_json({ ok => 1, payload => $payload });
+}
+```
+
+補足:
+
+- 本文が空なら `undef`
+- 不正な JSON の場合は例外になります
+- `POST + application/json` では、先に `param()` や `upload()` を呼ぶと `CGI::Simple` がリクエスト本文を読むため、その後の `param_json()` が空になることがあります
+- JSON 本文を読む処理では、クエリ文字列の判定に `param()` ではなく `env()->{QUERY_STRING}` を使うと安全です
+- CGI/PSGI 環境によっては、JSON POST の本文を読まずに応答するとレスポンス本文が期待どおり返らないことがあります。JSON POST を扱う処理では、本文を使わない場合でも先に `param_json()` で読み切ってから応答すると安全です
+
 ### `env()`
 
 PSGI の `env` をそのまま返します。
@@ -201,12 +253,40 @@ PSGI の `env` をそのまま返します。
 サンプル:
 
 ```perl
-my $method = env->{REQUEST_METHOD};
-my $path   = env->{PATH_INFO};
+my $method = env()->{REQUEST_METHOD};
+my $path   = env()->{PATH_INFO};
+```
+
+または、複数回参照する場合は変数に受けます。
+
+```perl
+my $req_env = env();
+my $method = $req_env->{REQUEST_METHOD};
+my $query  = $req_env->{QUERY_STRING};
 ```
 
 ```mt
-<p><?= env->{HTTP_HOST} ?></p>
+<p><?= env()->{HTTP_HOST} ?></p>
+```
+
+### `cookie($name?)`
+
+リクエスト cookie を取得します。
+
+引数を渡した場合はその cookie の値を返し、省略した場合は cookie 一覧を返します。
+
+省略時に返る一覧は、cookie 名をキー、`CGI::Simple::Cookie` オブジェクトを値にしたハッシュリファレンスです。
+
+サンプル:
+
+```perl
+my $sid = cookie('sid');
+```
+
+```mt
+? if (cookie('theme') eq 'dark') {
+<body class="dark">
+? }
 ```
 
 ### `mobile_agent()`
@@ -316,6 +396,29 @@ if (is_post_request()) {
 }
 ```
 
+### `respond($status, $headers, $body)`
+
+任意のステータスコード、ヘッダ、本文でレスポンスを返します。
+
+コントローラ専用です。
+
+サンプル:
+
+```perl
+respond(204, [], []);
+```
+
+```perl
+respond(201, ['Content-Type' => 'text/plain; charset=UTF-8'], 'created');
+```
+
+補足:
+
+- `$headers` は通常 `['Header-Name' => 'value', ...]`
+- `$body` は文字列または PSGI レスポンス本文用の配列リファレンスを渡せます
+- `Content-Type` は自動では付きません。必要な場合は `$headers` に明示してください
+- `set_cookie` で追加した `Set-Cookie` も自動でマージされます
+
 ### `render_and_print($template, @args)`
 
 テンプレートを描画し、その結果を HTML レスポンスとして返します。
@@ -385,7 +488,7 @@ finalize('OK');
 finalize('plain text', 'text/plain; charset=UTF-8');
 ```
 
-### `finalize_json($data)`
+### `finalize_json($data, $status?, $headers?)`
 
 Perl のハッシュリファレンスや配列リファレンスを JSON にエンコードして返します。
 
@@ -410,6 +513,13 @@ finalize_json([
     { id => 1, name => 'A' },
     { id => 2, name => 'B' },
 ]);
+```
+
+ステータスコードや追加ヘッダも指定できます。
+
+```perl
+finalize_json({ error => 'not found' }, 404);
+finalize_json({ ok => 1 }, 201, ['X-App' => 'menta']);
 ```
 
 使い分け:
@@ -449,6 +559,55 @@ my $url = current_url();
 ```mt
 <p>現在の URL: <?= current_url() ?></p>
 ```
+
+### `wants_json()`
+
+クライアントが JSON を期待しているかを判定します。
+
+現在は主に次を見ています。
+
+- `Accept: application/json`
+- `Content-Type: application/json`
+
+この判定は例外発生時のレスポンス形式にも使われます。JSON を期待するリクエストで例外が発生した場合は、エラーも JSON で返します。
+
+サンプル:
+
+```perl
+if (wants_json()) {
+    finalize_json({ ok => 1 });
+}
+```
+
+```mt
+? if (wants_json()) {
+<p>JSON クライアントです</p>
+? }
+```
+
+### `set_cookie($name, $value, %options)`
+
+レスポンスに `Set-Cookie` ヘッダを追加します。
+
+コントローラ専用です。
+
+指定できる主なオプション:
+
+- `path`
+- `domain`
+- `expires`
+- `secure`
+
+サンプル:
+
+```perl
+set_cookie('sid', 'abc123', path => '/', secure => 1);
+finalize('ok');
+```
+
+補足:
+
+- `respond`、`redirect`、`finalize`、`finalize_json`、`render_and_print` 系の応答時に一緒に返されます
 
 ## テンプレート専用ヘルパー
 

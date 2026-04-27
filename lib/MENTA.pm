@@ -72,8 +72,9 @@ sub create_app {
     my $app = sub {
         my $env = shift;
         local $MENTA::STASH;
+        my $req;
         try {
-            my $req = MENTA::Request->new($env);
+            $req = MENTA::Request->new($env);
             MENTA->run_context(
                 $config, $req, sub {
                     MENTA->call_trigger('BEFORE_DISPATCH');
@@ -83,6 +84,8 @@ sub create_app {
         } catch {
             if ($_ && ref $_ eq 'ARRAY') {
                 return $_;
+            } elsif (MENTA::Util::request_wants_json($req)) {
+                return MENTA::Util::exception_response($req, $_, '');
             } else {
                 my $e = $_;
                 utf8::encode($e) if utf8::is_utf8($e);
@@ -94,6 +97,7 @@ sub create_app {
         my $origapp = $app;
         $app = sub {
             my @args = @_;
+            my $req = MENTA::Request->new($args[0]);
             my $res;
             my $trace;
             my $caught;
@@ -125,11 +129,7 @@ sub create_app {
                 if (ref $_ && ref $_ eq 'ARRAY') {
                     return $_;
                 } else {
-                    return [
-                        500,
-                        [ 'Content-Type' => 'text/html; charset=utf-8', 'Content-Length' => length($trace) ],
-                        [ $trace ]
-                    ]
+                    return MENTA::Util::exception_response($req, $_, $trace);
                 }
             };
             return $res;
@@ -225,6 +225,28 @@ sub _finish {
     die $res;
 }
 
+sub respond {
+    my ($status, $headers, $body) = @_;
+    $status ||= 200;
+    $headers ||= [];
+    $headers = [ map { @$_ } @$headers ] if ref($headers) eq 'ARRAY' && @$headers && ref($headers->[0]) eq 'ARRAY';
+    $headers = [ %$headers ] if ref($headers) eq 'HASH';
+
+    my @headers = @{ $headers || [] };
+    push @headers, @{ $MENTA::STASH->{response_headers} || [] };
+
+    my $res_body;
+    if (!defined $body) {
+        $res_body = [''];
+    } elsif (ref($body)) {
+        $res_body = $body;
+    } else {
+        $res_body = [$body];
+    }
+
+    _finish([$status, \@headers, $res_body]);
+}
+
 sub render_and_print {
     my ($tmpl, @params) = @_;
     render_and_print_as('text/html; charset=' . MENTA::Util::_charset(), $tmpl, @params);
@@ -235,33 +257,28 @@ sub render_and_print_as {
     MENTA::Util::require_once('MENTA/TemplateLoader.pm');
     my $out = MENTA::TemplateLoader::__load($tmpl, @params);
     $out = MENTA::Util::encode_output($out);
-
-    _finish([
-        200, [
-            'Content-Type' => $content_type
-        ], [$out]
-    ]);
+    respond(200, ['Content-Type' => $content_type], $out);
 }
 
 sub redirect {
     my ($location, ) = @_;
     Carp::confess("missing location for redirect") unless defined $location;
-
-    _finish([302, ['Location' => $location], []]);
+    respond(302, ['Location' => $location], []);
 }
 
 sub finalize {
     my $str = shift;
     my $content_type = shift || ('text/html; charset=' . MENTA::Util::_charset());
-
-    _finish([200, ['Content-Type' => $content_type], [$str]]);
+    respond(200, ['Content-Type' => $content_type], $str);
 }
 
 sub finalize_json {
-    my ($data) = @_;
+    my ($data, $status, $headers) = @_;
     MENTA::Util::require_once('JSON/PP.pm');
     my $json = JSON::PP::encode_json($data);
-    _finish([200, ['Content-Type' => 'application/json; charset=UTF-8'], [$json]]);
+    my @headers = ('Content-Type' => 'application/json; charset=UTF-8');
+    push @headers, @{ $headers || [] };
+    respond($status || 200, \@headers, $json);
 }
 
 sub param {
@@ -274,7 +291,9 @@ sub param {
 }
 sub env          { MENTA->context->request->env() }
 sub upload       { MENTA->context->request->upload(@_) }
+sub cookie       { MENTA->context->request->cookie(@_) }
 sub mobile_agent { MENTA->context->mobile_agent() }
+sub param_json   { MENTA->context->request->param_json(@_) }
 sub current_url  {
     my $req = MENTA->context->request;
     my $env = $req->{env};
@@ -304,6 +323,25 @@ sub is_post_request () {
     my $env = MENTA->context->request->{env};
     my $method = $env->{REQUEST_METHOD};
     return $method eq 'POST';
+}
+
+sub wants_json () {
+    MENTA::Util::request_wants_json(MENTA->context->request);
+}
+
+sub set_cookie {
+    my ($name, $value, %opt) = @_;
+    MENTA::Util::require_once('CGI/Simple/Cookie.pm');
+    my $cookie = CGI::Simple::Cookie->new(
+        -name    => $name,
+        -value   => $value,
+        (defined $opt{expires} ? (-expires => $opt{expires}) : ()),
+        (defined $opt{domain}  ? (-domain  => $opt{domain})  : ()),
+        (defined $opt{path}    ? (-path    => $opt{path})    : ()),
+        (defined $opt{secure}  ? (-secure  => $opt{secure})  : ()),
+    ) or die "cookie の作成に失敗しました";
+    push @{ $MENTA::STASH->{response_headers} ||= [] }, 'Set-Cookie' => $cookie->as_string;
+    return $cookie;
 }
 
 sub docroot () {
@@ -381,6 +419,39 @@ sub static_file_path {
             +{ 'utf-8' => 'UTF-8', cp932 => 'Shift_JIS' }->{_mobile_encoding()};
         } else {
             'UTF-8';
+        }
+    }
+
+    sub request_wants_json {
+        my ($req) = @_;
+        return unless $req;
+        my $accept = $req->header('Accept') || '';
+        my $content_type = $req->{env}->{CONTENT_TYPE} || '';
+        return $accept =~ m{(?:^|,)\s*application/json(?:\s*[,;]|$)}i
+            || $content_type =~ m{^application/json(?:\s*;|$)}i;
+    }
+
+    sub exception_response {
+        my ($req, $error, $trace) = @_;
+        if (request_wants_json($req)) {
+            require_once('JSON/PP.pm');
+            my $body = JSON::PP::encode_json({
+                error => {
+                    message => "$error",
+                    ($trace ? (trace => $trace) : ()),
+                },
+            });
+            return [
+                500,
+                ['Content-Type' => 'application/json; charset=UTF-8'],
+                [$body],
+            ];
+        } else {
+            return [
+                500,
+                [ 'Content-Type' => 'text/html; charset=utf-8', 'Content-Length' => length($trace) ],
+                [ $trace ]
+            ];
         }
     }
 
